@@ -86,24 +86,27 @@ class Pipeline:
                     landmarks.append(landmark)
                     scores.append(score)
 
-                # Predict gaze
-                pitch, yaw = self.predict_gaze(np.stack(face_imgs))
+                # Predict gaze (only when at least one face passed threshold)
+                if len(face_imgs) > 0:
+                    pitch, yaw = self.predict_gaze(np.stack(face_imgs))
+                else:
+                    pitch = np.empty((0,))
+                    yaw   = np.empty((0,))
 
             else:
-
-                pitch = np.empty((0,1))
-                yaw = np.empty((0,1))
+                pitch = np.empty((0,))
+                yaw   = np.empty((0,))
 
         else:
             pitch, yaw = self.predict_gaze(frame)
 
-        # Save data
+        # Save data — use empty arrays with correct shape when nothing detected
         results = GazeResultContainer(
             pitch=pitch,
             yaw=yaw,
-            bboxes=np.stack(bboxes),
-            landmarks=np.stack(landmarks),
-            scores=np.stack(scores)
+            bboxes=np.stack(bboxes)     if len(bboxes)     > 0 else np.empty((0, 4)),
+            landmarks=np.stack(landmarks) if len(landmarks) > 0 else np.empty((0, 5, 2)),
+            scores=np.stack(scores)     if len(scores)     > 0 else np.empty((0,)),
         )
 
         return results
