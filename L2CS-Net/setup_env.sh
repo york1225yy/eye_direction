@@ -178,6 +178,10 @@ MODEL_PATH="$SCRIPT_DIR/models/L2CSNet_gaze360.pkl"
 mkdir -p "$SCRIPT_DIR/models"
 mkdir -p "$SCRIPT_DIR/output"
 
+# 设置 HuggingFace 镜像（AutoDL / 国内环境）
+export HF_ENDPOINT="https://hf-mirror.com"
+log_info "HuggingFace endpoint: $HF_ENDPOINT"
+
 if [[ -f "$MODEL_PATH" ]]; then
     SIZE_MB=$(du -m "$MODEL_PATH" | cut -f1)
     if [[ $SIZE_MB -ge 50 ]]; then

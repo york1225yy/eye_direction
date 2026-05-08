@@ -122,21 +122,46 @@ pip install -e .
 
 模型文件 `L2CSNet_gaze360.pkl`（~216 MB）使用 Gaze360 数据集训练，Angular Error ≈ 4.0°。
 
-### 方式一：自动下载（推荐）
+### 方式一：自动下载（推荐，支持国内环境）
+
+脚本按优先级依次尝试以下来源，**国内/AutoDL 环境会自动走 hf-mirror.com 镜像**：
+
+| 优先级 | 来源 | 可用环境 |
+|--------|------|---------|
+| 1 | HuggingFace 镜像 (hf-mirror.com) | AutoDL / 国内 ✅ |
+| 2 | HuggingFace 官方 (huggingface.co) | 有梯子 / 海外 ✅ |
+| 3 | Google Drive (gdown) | 有梯子 / 海外 ✅ |
 
 ```bash
 python download_model.py
 ```
 
-### 方式二：手动下载
+强制重新下载：
+```bash
+python download_model.py --force
+```
 
-1. 访问 Google Drive 链接：  
-   https://drive.google.com/drive/folders/17p6ORr-JQJcw-eYtG2WGNiuS_qVKwdWd
-2. 下载 `L2CSNet_gaze360.pkl`
-3. 将文件放到 `models/` 目录下：
+### 方式二：手动上传（AutoDL 无法自动下载时）
+
+**Option A — AutoDL 控制台文件上传：**
+1. 在本地浏览器打开 Google Drive 或 HuggingFace 下载模型：  
+   https://huggingface.co/oraclex/L2CS-Net  
+   或 https://drive.google.com/drive/folders/17p6ORr-JQJcw-eYtG2WGNiuS_qVKwdWd
+2. 登录 AutoDL 控制台 → 实例详情 → **文件上传**
+3. 上传 `L2CSNet_gaze360.pkl` 后在终端执行：
+   ```bash
+   mv ~/L2CSNet_gaze360.pkl /path/to/L2CS-Net/models/
    ```
-   L2CS-Net/models/L2CSNet_gaze360.pkl
-   ```
+
+**Option B — JupyterLab 上传：**
+1. 打开 AutoDL JupyterLab
+2. 切换到 `L2CS-Net/models/` 目录
+3. 点击工具栏上传按钮（↑）上传文件
+
+**Option C — scp 从本地传入：**
+```bash
+scp L2CSNet_gaze360.pkl root@<autodl-host>:<ssh-port>:/path/to/L2CS-Net/models/
+```
 
 ---
 
