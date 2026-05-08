@@ -85,8 +85,36 @@ def parse_args():
     parser.add_argument(
         "--confidence", "-c",
         type=float,
+        default=0.9,
+        help=(
+            "Face detection confidence threshold (0~1).\n"
+            "  Higher value → fewer false positives.\n"
+            "  Recommended: 0.9 for single-driver scene, 0.5 for crowd.\n"
+            "Default: 0.9"
+        )
+    )
+    parser.add_argument(
+        "--max-faces",
+        type=int,
+        default=1,
+        help=(
+            "Keep only the top N faces (by detection score) per frame.\n"
+            "  Use 1 for single-driver monitoring (suppresses false positives).\n"
+            "  Use 0 to keep all detected faces.\n"
+            "Default: 1"
+        )
+    )
+    parser.add_argument(
+        "--det-scale",
+        type=float,
         default=0.5,
-        help="Face detection confidence threshold. Default: 0.5"
+        help=(
+            "Scale factor applied to the frame BEFORE face detection (0.1~1.0).\n"
+            "  Lower value → faster detection, reduced accuracy on small faces.\n"
+            "  0.5 halves width/height → ~4x fewer pixels for detector.\n"
+            "  Gaze estimation always uses the original-resolution crop.\n"
+            "Default: 0.5"
+        )
     )
     parser.add_argument(
         "--show",
@@ -282,6 +310,97 @@ def _angle_color(deg: float):
     return (0, 80, 255)
 
 
+def _step_with_scale(pipeline, frame: np.ndarray,
+                     det_scale: float = 1.0,
+                     max_faces: int = 0):
+    """
+    Run the gaze pipeline with optional pre-detection downscale.
+
+    det_scale < 1.0 shrinks the frame before RetinaFace detection,
+    significantly speeding up the detector on high-resolution video.
+    Bounding-boxes and landmarks are scaled back to original coordinates
+    before being passed to the L2CS gaze model (which always crops from
+    the full-resolution frame).
+
+    max_faces > 0  keeps only the top-N results ordered by detection score,
+    suppressing multi-scale duplicate detections of the same face.
+    """
+    from l2cs.results import GazeResultContainer
+
+    orig_h, orig_w = frame.shape[:2]
+
+    if det_scale < 1.0:
+        det_w = max(32, int(orig_w * det_scale))
+        det_h = max(32, int(orig_h * det_scale))
+        det_frame = cv2.resize(frame, (det_w, det_h))
+        scale_x = orig_w / det_w
+        scale_y = orig_h / det_h
+    else:
+        det_frame = frame
+        scale_x = scale_y = 1.0
+
+    # Run detector on (possibly) downscaled frame
+    face_imgs  = []
+    bboxes     = []
+    landmarks  = []
+    scores     = []
+
+    faces = pipeline.detector(det_frame)
+
+    if faces is not None:
+        for box, landmark, score in faces:
+            if score < pipeline.confidence_threshold:
+                continue
+
+            # Scale bbox back to original resolution
+            x_min = max(int(box[0] * scale_x), 0)
+            y_min = max(int(box[1] * scale_y), 0)
+            x_max = min(int(box[2] * scale_x), orig_w)
+            y_max = min(int(box[3] * scale_y), orig_h)
+
+            if x_max <= x_min or y_max <= y_min:
+                continue
+
+            # Crop from ORIGINAL frame for gaze model
+            crop = frame[y_min:y_max, x_min:x_max]
+            crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            crop = cv2.resize(crop, (224, 224))
+            face_imgs.append(crop)
+
+            # Scale bbox array
+            scaled_box = np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
+            bboxes.append(scaled_box)
+
+            # Scale landmarks back
+            scaled_lm = landmark.copy().astype(np.float32)
+            scaled_lm[:, 0] *= scale_x
+            scaled_lm[:, 1] *= scale_y
+            landmarks.append(scaled_lm)
+            scores.append(score)
+
+    # Keep top-N by score (suppresses multi-scale duplicate detections)
+    if max_faces > 0 and len(scores) > max_faces:
+        order = np.argsort(scores)[::-1][:max_faces]
+        face_imgs  = [face_imgs[i]  for i in order]
+        bboxes     = [bboxes[i]     for i in order]
+        landmarks  = [landmarks[i]  for i in order]
+        scores     = [scores[i]     for i in order]
+
+    if len(face_imgs) > 0:
+        pitch, yaw = pipeline.predict_gaze(np.stack(face_imgs))
+    else:
+        pitch = np.empty((0,))
+        yaw   = np.empty((0,))
+
+    return GazeResultContainer(
+        pitch=pitch,
+        yaw=yaw,
+        bboxes=np.stack(bboxes)       if len(bboxes)     > 0 else np.empty((0, 4)),
+        landmarks=np.stack(landmarks) if len(landmarks)  > 0 else np.empty((0, 5, 2)),
+        scores=np.array(scores)       if len(scores)     > 0 else np.empty((0,)),
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -314,7 +433,12 @@ def main():
     print(f"[INFO] Device: {device}")
 
     # ── Pipeline ─────────────────────────────────────────────────────────────
+    det_scale  = max(0.1, min(1.0, args.det_scale))
+    max_faces  = args.max_faces
     print(f"[INFO] Loading model: {weights_path}")
+    print(f"[INFO] Confidence threshold : {args.confidence}")
+    print(f"[INFO] Max faces per frame  : {max_faces if max_faces > 0 else 'unlimited'}")
+    print(f"[INFO] Detection scale      : {det_scale:.2f}  (detector input = original x{det_scale:.2f})")
     gaze_pipeline = Pipeline(
         weights=weights_path,
         arch=args.arch,
@@ -378,7 +502,7 @@ def main():
 
             # ── Inference ────────────────────────────────────────────────
             try:
-                results = gaze_pipeline.step(frame)
+                results = _step_with_scale(gaze_pipeline, frame, det_scale, max_faces)
             except Exception as e:
                 print(f"[WARN] Frame {frame_idx}: inference error: {e}")
                 results = None
