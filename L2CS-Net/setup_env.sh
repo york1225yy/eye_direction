@@ -141,21 +141,12 @@ install_if_missing "Pillow" "PIL"
 install_if_missing "scipy"
 install_if_missing "gdown"
 
-# face_detection（RetinaFace，依赖 git+url）
+# face_detection（椭圆脸检测，依赖 git+url）
 if $PYTHON -c "import face_detection" 2>/dev/null; then
     log_info "face_detection 已安装，跳过"
 else
     log_info "安装 face_detection ..."
     $PIP install git+https://github.com/elliottzheng/face-detection -q
-fi
-
-# yolov5face（可选，GPU 加速检测器）
-if $PYTHON -c "import yolov5face" 2>/dev/null; then
-    log_info "yolov5face 已安装，跳过"
-else
-    log_info "安装 yolov5face（GPU 加速人脸检测器，可选）..."
-    $PIP install yolov5face -q && log_info "yolov5face 安装成功" \
-        || log_warn "yolov5face 安装失败（可选包，不影响默认 retinaface 模式）"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

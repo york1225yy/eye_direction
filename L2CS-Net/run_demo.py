@@ -37,86 +37,6 @@ from l2cs import Pipeline, render, select_device
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Detector abstraction
-# ─────────────────────────────────────────────────────────────────────────────
-
-class RetinaFaceDetector:
-    """Thin wrapper around face_detection.RetinaFace with a unified interface."""
-
-    def __init__(self, device: torch.device):
-        from face_detection import RetinaFace
-        if device.type == 'cpu':
-            self._det = RetinaFace()
-        else:
-            self._det = RetinaFace(gpu_id=device.index)
-
-    def __call__(self, frame_bgr: np.ndarray):
-        """
-        Returns list of (box_xyxy, landmarks_5x2, score) or None.
-        box_xyxy  : np.ndarray [x1, y1, x2, y2]
-        landmarks : np.ndarray (5, 2)
-        score     : float
-        """
-        return self._det(frame_bgr)   # already in the right format
-
-
-class YOLOv5FaceDetector:
-    """
-    Wrapper around the `yolov5face` pip package.
-    Install: pip install yolov5face
-    GitHub : https://github.com/deepcam-cn/yolov5-face
-    """
-
-    def __init__(self, device: torch.device, target_size: int = 640, min_face: int = 24):
-        try:
-            from yolov5face.face_detector import YoloDetector
-        except ImportError:
-            raise ImportError(
-                "yolov5face is not installed.\n"
-                "  pip install yolov5face"
-            )
-        gpu_id = device.index if device.type != 'cpu' else -1
-        self._det = YoloDetector(target_size=target_size, gpu=gpu_id, min_face=min_face)
-
-    def __call__(self, frame_bgr: np.ndarray):
-        """
-        Normalise yolov5face output to the same format as RetinaFaceDetector:
-          list of (box_xyxy np.ndarray, landmarks (5,2) np.ndarray, score float)
-        yolov5face predict() returns:
-          bboxes : list[ array([x1,y1,x2,y2,conf], ...) ]   outer list = batch
-          points : list[ array([x1,y1,x2,y2,...], ...) ]    flat 10 values
-        """
-        bboxes_batch, points_batch = self._det.predict(frame_bgr)
-
-        if (not bboxes_batch or
-                bboxes_batch[0] is None or
-                len(bboxes_batch[0]) == 0):
-            return None
-
-        results = []
-        for bd, pt in zip(bboxes_batch[0], points_batch[0]):
-            bd    = np.asarray(bd, dtype=np.float32)
-            box   = bd[:4]
-            score = float(bd[4]) if len(bd) > 4 else 1.0
-            lm    = np.asarray(pt, dtype=np.float32).reshape(5, 2)
-            results.append((box, lm, score))
-
-        return results if results else None
-
-
-def build_detector(name: str, device: torch.device, det_size: int = 640):
-    name = name.lower()
-    if name == 'retinaface':
-        print("[INFO] Detector: RetinaFace")
-        return RetinaFaceDetector(device)
-    elif name in ('yolov5face', 'yolov5'):
-        print(f"[INFO] Detector: YOLOv5-face  (target_size={det_size})")
-        return YOLOv5FaceDetector(device, target_size=det_size)
-    else:
-        raise ValueError(f"Unknown detector '{name}'. Choose: retinaface | yolov5face")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -185,30 +105,6 @@ def parse_args():
         )
     )
     parser.add_argument(
-        "--detector",
-        default="retinaface",
-        choices=["retinaface", "yolov5face"],
-        help=(
-            "Face detector backend.\n"
-            "  'retinaface'  : built-in RetinaFace (no extra install).\n"
-            "  'yolov5face'  : YOLOv5-face GPU-accelerated detector\n"
-            "                  (pip install yolov5face), recommended for\n"
-            "                  high-res video or when GPU is available.\n"
-            "Default: retinaface"
-        )
-    )
-    parser.add_argument(
-        "--det-size",
-        type=int,
-        default=640,
-        help=(
-            "Input resolution for YOLOv5-face detector (long-side px).\n"
-            "  Ignored when --detector retinaface.\n"
-            "  Smaller → faster; typical: 320 / 480 / 640 / 960.\n"
-            "Default: 640"
-        )
-    )
-    parser.add_argument(
         "--det-scale",
         type=float,
         default=0.5,
@@ -217,8 +113,6 @@ def parse_args():
             "  Lower value → faster detection, reduced accuracy on small faces.\n"
             "  0.5 halves width/height → ~4x fewer pixels for detector.\n"
             "  Gaze estimation always uses the original-resolution crop.\n"
-            "  Tip: for yolov5face, --det-scale 1.0 + --det-size 640 is often\n"
-            "       better than double-scaling.\n"
             "Default: 0.5"
         )
     )
@@ -418,16 +312,18 @@ def _angle_color(deg: float):
 
 def _step_with_scale(pipeline, frame: np.ndarray,
                      det_scale: float = 1.0,
-                     max_faces: int = 0,
-                     detector=None):
+                     max_faces: int = 0):
     """
     Run the gaze pipeline with optional pre-detection downscale.
 
-    detector   : detector instance (RetinaFaceDetector or YOLOv5FaceDetector).
-                 Falls back to pipeline.detector when None.
-    det_scale  : resize frame to this fraction before detection;
-                 coords are mapped back to original resolution.
-    max_faces  : keep only top-N faces by score (0 = unlimited).
+    det_scale < 1.0 shrinks the frame before RetinaFace detection,
+    significantly speeding up the detector on high-resolution video.
+    Bounding-boxes and landmarks are scaled back to original coordinates
+    before being passed to the L2CS gaze model (which always crops from
+    the full-resolution frame).
+
+    max_faces > 0  keeps only the top-N results ordered by detection score,
+    suppressing multi-scale duplicate detections of the same face.
     """
     from l2cs.results import GazeResultContainer
 
@@ -449,13 +345,11 @@ def _step_with_scale(pipeline, frame: np.ndarray,
     landmarks  = []
     scores     = []
 
-    _det = detector if detector is not None else pipeline.detector
-    faces = _det(det_frame)
-    conf_thresh = pipeline.confidence_threshold
+    faces = pipeline.detector(det_frame)
 
     if faces is not None:
         for box, landmark, score in faces:
-            if score < conf_thresh:
+            if score < pipeline.confidence_threshold:
                 continue
 
             # Scale bbox back to original resolution
@@ -541,28 +435,16 @@ def main():
     # ── Pipeline ─────────────────────────────────────────────────────────────
     det_scale  = max(0.1, min(1.0, args.det_scale))
     max_faces  = args.max_faces
-    print(f"[INFO] Loading model       : {weights_path}")
-    print(f"[INFO] Detector            : {args.detector}")
-    print(f"[INFO] Confidence threshold: {args.confidence}")
-    print(f"[INFO] Max faces per frame : {max_faces if max_faces > 0 else 'unlimited'}")
-    print(f"[INFO] Detection scale     : {det_scale:.2f}")
-
-    # For external detectors (yolov5face) skip building the built-in one
-    use_builtin_detector = (args.detector == 'retinaface')
+    print(f"[INFO] Loading model: {weights_path}")
+    print(f"[INFO] Confidence threshold : {args.confidence}")
+    print(f"[INFO] Max faces per frame  : {max_faces if max_faces > 0 else 'unlimited'}")
+    print(f"[INFO] Detection scale      : {det_scale:.2f}  (detector input = original x{det_scale:.2f})")
     gaze_pipeline = Pipeline(
         weights=weights_path,
         arch=args.arch,
         device=device,
         confidence_threshold=args.confidence,
-        include_detector=use_builtin_detector,
     )
-
-    # Build external detector or reuse the pipeline's built-in one
-    if use_builtin_detector:
-        ext_detector = gaze_pipeline.detector
-    else:
-        ext_detector = build_detector(args.detector, device, det_size=args.det_size)
-
     print("[INFO] Model loaded.")
 
     # ── Input source ─────────────────────────────────────────────────────────
@@ -620,8 +502,7 @@ def main():
 
             # ── Inference ────────────────────────────────────────────────
             try:
-                results = _step_with_scale(gaze_pipeline, frame, det_scale,
-                                           max_faces, detector=ext_detector)
+                results = _step_with_scale(gaze_pipeline, frame, det_scale, max_faces)
             except Exception as e:
                 print(f"[WARN] Frame {frame_idx}: inference error: {e}")
                 results = None
