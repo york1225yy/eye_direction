@@ -133,18 +133,6 @@ def parse_args():
         default=0,            # 0 表示不限制帧数，处理全部帧
         help="Maximum number of frames to process (0 = unlimited). Default: 0"
     )
-    parser.add_argument(
-        "--face-detector",
-        default="RetinaNetResNet50",   # 默认使用 ResNet50 版 RetinaFace
-        choices=["RetinaNetResNet50", "RetinaNetMobileNetV1", "DSFDDetector"],
-        help=(
-            "Face detection backbone.\n"
-            "  RetinaNetResNet50    : standard, ~27M params, supports landmarks (default)\n"
-            "  RetinaNetMobileNetV1 : lightweight, ~0.4M params, faster, supports landmarks\n"
-            "  DSFDDetector         : highest accuracy, ~120M params, no landmarks\n"
-            "Default: RetinaNetResNet50"
-        )
-    )
     return parser.parse_args()  # 解析并返回参数对象
 
 
@@ -294,9 +282,7 @@ def draw_info_overlay(frame: np.ndarray, results, fps: float, frame_idx: int = 0
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, col, 1, cv2.LINE_AA)
 
         # ── 绘制 RetinaFace 输出的 5 个关键点（面部特征点） ───────────────
-        # 跳过全零地标点（DSFDDetector 不提供关键点时的占位值）
-        if results.landmarks is not None and results.landmarks.shape[0] > i \
-                and np.any(results.landmarks[i]):
+        if results.landmarks is not None and results.landmarks.shape[0] > i:
             lms = results.landmarks[i]  # 第 i 张人脸的关键点，形状 (5, 2)：[左眼, 右眼, 鼻, 左嘴角, 右嘴角]
             lm_labels = ["LE", "RE", "N", "LM", "RM"]  # 关键点缩写标签
             lm_colors = [
@@ -360,10 +346,12 @@ def _step_with_scale(pipeline, frame: np.ndarray,
     landmarks  = []   # 关键点列表（已还原到原始分辨率）
     scores     = []   # 检测置信度分数列表
 
-    faces = pipeline.detect_faces(det_frame)  # 在（可能缩小的）帧上运行人脸检测器
+    faces = pipeline.detector(det_frame)  # 在（可能缩小的）帧上运行人脸检测器
 
     if faces is not None:                 # 有检测结果时处理每张人脸
         for box, landmark, score in faces:
+            if score < pipeline.confidence_threshold:  # 过滤低置信度检测结果
+                continue
 
             # 将边界框坐标从检测帧还原到原始帧尺寸
             x_min = max(int(box[0] * scale_x), 0)
@@ -453,13 +441,11 @@ def main():
     print(f"[INFO] Confidence threshold : {args.confidence}")
     print(f"[INFO] Max faces per frame  : {max_faces if max_faces > 0 else 'unlimited'}")
     print(f"[INFO] Detection scale      : {det_scale:.2f}  (detector input = original x{det_scale:.2f})")
-    print(f"[INFO] Face detector        : {args.face_detector}")
     gaze_pipeline = Pipeline(
         weights=weights_path,                # 模型权重文件路径
         arch=args.arch,                      # 骨干网络结构
         device=device,                       # 推理设备
         confidence_threshold=args.confidence,# 人脸检测置信度阈值
-        face_detector=args.face_detector,    # 人脸检测器模型选择
     )
     print("[INFO] Model loaded.")  # 模型加载完成提示
 
