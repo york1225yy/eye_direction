@@ -362,10 +362,10 @@ def _step_with_scale(pipeline, frame: np.ndarray,
             if x_max <= x_min or y_max <= y_min:  # 跳过无效（零面积）边界框
                 continue
 
-            # 从原始帧裁剪人脸区域，保证注视模型输入分辨率足够高
+            # 从原始帧裁剪人脸区域，BGR→RGB；最终 resize 到 448×448
+            # 在 prep_input_numpy() 内统一完成，避免先缩到 224 再放大的多余操作
             crop = frame[y_min:y_max, x_min:x_max]
             crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)  # BGR 转 RGB（模型期望 RGB 输入）
-            crop = cv2.resize(crop, (224, 224))            # 缩放到模型输入尺寸 224x224
             face_imgs.append(crop)
 
             # 保存已还原的边界框（float32 数组）

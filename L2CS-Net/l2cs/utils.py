@@ -26,6 +26,10 @@ transformations = transforms.Compose([
     )
 ])
 
+# 用于快速预处理的常量（ImageNet 均值/标准差，float32）
+_PREP_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_PREP_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
 def atoi(text):
     return int(text) if text.isdigit() else text
 
@@ -37,23 +41,27 @@ def natural_keys(text):
     '''
     return [ atoi(c) for c in re.split(r'(\d+)', text) ]
 
-def prep_input_numpy(img:np.ndarray, device:str):
-    """Preparing a Numpy Array as input to L2CS-Net."""
+def prep_input_numpy(img: np.ndarray, device: str):
+    """Preparing a Numpy Array as input to L2CS-Net.
 
-    if len(img.shape) == 4:
-        imgs = []
-        for im in img:
-            imgs.append(transformations(im))
-        img = torch.stack(imgs)
-    else:
-        img = transformations(img)
+    Fast path: pure OpenCV + numpy pipeline, avoids PIL overhead.
+    Input:  uint8 RGB ndarray of shape [H, W, 3] or [N, H, W, 3]
+    Output: float32 NCHW tensor on `device`, normalised with ImageNet stats
+    """
+    if img.ndim == 3:
+        img = img[None]  # [1, H, W, 3]
 
-    img = img.to(device)
+    batch = []
+    for im in img:
+        # cv2.resize expects (W, H) and works in-place on uint8
+        im = cv2.resize(im, (448, 448), interpolation=cv2.INTER_LINEAR)
+        im = im.astype(np.float32) / 255.0
+        im = (im - _PREP_MEAN) / _PREP_STD      # per-channel normalise
+        batch.append(im)
 
-    if len(img.shape) == 3:
-        img = img.unsqueeze(0)
-
-    return img
+    # Stack → [N, H, W, C] → [N, C, H, W]
+    t = torch.from_numpy(np.stack(batch)).permute(0, 3, 1, 2)
+    return t.to(device)
 
 def gazeto3d(gaze):
     gaze_gt = np.zeros([3])

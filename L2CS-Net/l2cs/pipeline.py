@@ -75,10 +75,10 @@ class Pipeline:
                     x_max=int(box[2])
                     y_max=int(box[3])
                     
-                    # Crop image
+                    # Crop image — BGR→RGB only; resize to 448×448 is done
+                    # inside prep_input_numpy() to avoid a redundant scale step
                     img = frame[y_min:y_max, x_min:x_max]
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    img = cv2.resize(img, (224, 224))
                     face_imgs.append(img)
 
                     # Save data
