@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from face_detection import RetinaFace
+from face_detection import build_detector
 
 from .utils import prep_input_numpy, getArch
 from .results import GazeResultContainer
@@ -20,7 +20,8 @@ class Pipeline:
         arch: str,
         device: str = 'cpu', 
         include_detector:bool = True,
-        confidence_threshold:float = 0.5
+        confidence_threshold:float = 0.5,
+        face_detector: str = 'RetinaNetResNet50'
         ):
 
         # Save input parameters
@@ -28,6 +29,7 @@ class Pipeline:
         self.include_detector = include_detector
         self.device = device
         self.confidence_threshold = confidence_threshold
+        self.face_detector = face_detector
 
         # Create L2CS model
         self.model = getArch(arch, 90)
@@ -35,17 +37,45 @@ class Pipeline:
         self.model.to(self.device)
         self.model.eval()
 
-        # Create RetinaFace if requested
+        # Create face detector if requested
         if self.include_detector:
-
-            if device.type == 'cpu':
-                self.detector = RetinaFace()
-            else:
-                self.detector = RetinaFace(gpu_id=device.index)
+            self.detector = build_detector(
+                name=face_detector,
+                confidence_threshold=confidence_threshold,
+                device=device,
+            )
 
             self.softmax = nn.Softmax(dim=1)
             self.idx_tensor = [idx for idx in range(90)]
             self.idx_tensor = torch.FloatTensor(self.idx_tensor).to(self.device)
+
+    def detect_faces(self, frame: np.ndarray):
+        """Run face detector on a BGR uint8 frame.
+
+        Returns a list of (box [4], landmark [5,2], score) tuples, or None if
+        no faces are found. Supports all three detectors in face_detection:
+          - RetinaNetResNet50    : standard accuracy, ~27M params, landmarks
+          - RetinaNetMobileNetV1 : lightweight,  ~0.4M params, landmarks
+          - DSFDDetector         : highest accuracy, ~120M params, NO landmarks
+        """
+        has_landmarks = self.face_detector != 'DSFDDetector'
+
+        if has_landmarks:
+            boxes_list, landmarks_list = self.detector.batched_detect_with_landmarks(
+                frame[None]  # add batch dim: [1, H, W, 3]
+            )
+            dets = boxes_list[0]      # shape [N, 5]: (x1, y1, x2, y2, score)
+            lms  = landmarks_list[0]  # shape [N, 5, 2]
+            if len(dets) == 0:
+                return None
+            return [(dets[j, :4], lms[j], float(dets[j, 4])) for j in range(len(dets))]
+        else:
+            # DSFDDetector: no landmarks, return zero placeholder
+            dets = self.detector.detect(frame)  # shape [N, 5]: (x1, y1, x2, y2, score)
+            if len(dets) == 0:
+                return None
+            empty_lm = np.zeros((5, 2), dtype=np.float32)
+            return [(dets[j, :4], empty_lm.copy(), float(dets[j, 4])) for j in range(len(dets))]
 
     def step(self, frame: np.ndarray) -> GazeResultContainer:
 
@@ -56,14 +86,10 @@ class Pipeline:
         scores = []
 
         if self.include_detector:
-            faces = self.detector(frame)
+            faces = self.detect_faces(frame)
 
-            if faces is not None: 
+            if faces is not None:
                 for box, landmark, score in faces:
-
-                    # Apply threshold
-                    if score < self.confidence_threshold:
-                        continue
 
                     # Extract safe min and max of x,y
                     x_min=int(box[0])
